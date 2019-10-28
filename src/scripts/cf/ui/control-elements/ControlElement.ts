@@ -12,6 +12,7 @@ namespace cf {
 		y: number,
 		centerX?: number,
 		centerY?: number,
+		el: cf.IControlElement
 	}
 
 	export interface IControlElementOptions extends IBasicElementOptions{
@@ -27,6 +28,9 @@ namespace cf {
 		tabIndex: number;
 		visible: boolean;
 		focus: boolean;
+		highlight: boolean;
+		partOfSeveralChoices: boolean;
+		hasImage(): boolean;
 		calcPosition(): void;
 		dealloc(): void;
 	}
@@ -35,6 +39,7 @@ namespace cf {
 		SUBMIT_VALUE: "cf-basic-element-submit",
 		PROGRESS_CHANGE: "cf-basic-element-progress", // busy, ready
 		ON_FOCUS: "cf-basic-element-on-focus", // busy, ready
+		ON_LOADED: "cf-basic-element-on-loaded", // busy, loaded
 	}
 
 	export const ControlElementProgressStates = {
@@ -48,6 +53,7 @@ namespace cf {
 		public referenceTag: ITag;
 
 		private animateInTimer: number = 0;
+		private _partOfSeveralChoices: boolean = false;
 		private _positionVector: ControlElementVector;
 		private _focus: boolean = false;
 		private onFocusCallback: () => void;
@@ -57,8 +63,32 @@ namespace cf {
 			return "ControlElement";
 		}
 
+		public set partOfSeveralChoices(value: boolean) {
+			this._partOfSeveralChoices = value;
+		}
+
+		public get partOfSeveralChoices() : boolean {
+			return this._partOfSeveralChoices;
+		}
+
 		public get value():string{
-			return Helpers.getInnerTextOfElement(this.el);
+			// value is for the chat response -->
+			const hasTagImage: boolean = (<Tag> this.referenceTag).hasImage;
+			let str: string;
+			if(hasTagImage && !this.partOfSeveralChoices){
+				// const image: string = hasTagImage ? "<img src='" + this.referenceTag.domElement.getAttribute("cf-image") + "'/>" : "";
+				const image = hasTagImage ? "<img src=\"" + this.referenceTag.domElement.getAttribute("cf-image") + "\"/>" : "";
+				// str = "<div class='contains-image'>"
+				// str += image;
+				// str += "<span>" + Helpers.getInnerTextOfElement(this.el) + "</span>";
+				// str += "</div>";
+				str = image + Helpers.getInnerTextOfElement(this.el);
+			}else{
+				// str = "<div><span>" + Helpers.getInnerTextOfElement(this.el) + "</span></div>";
+				str = Helpers.getInnerTextOfElement(this.el);
+			}
+			
+			return str;
 		}
 
 		public get positionVector():ControlElementVector{
@@ -68,9 +98,28 @@ namespace cf {
 		public set tabIndex(value: number){
 			this.el.tabIndex = value;
 		}
+
+		public get highlight(): boolean{
+			return this.el.classList.contains("highlight");
+		}
+
+		public set highlight(value: boolean){
+			if(value)
+				this.el.classList.add("highlight");
+			else
+				this.el.classList.remove("highlight");
+		}
 	
 		public get focus(): boolean{
 			return this._focus;
+		}
+
+		public set focus(value: boolean){
+			this._focus = value;
+			if(this._focus)
+				this.el.focus();
+			else
+				this.el.blur();
 		}
 	
 		public get visible(): boolean{
@@ -83,6 +132,7 @@ namespace cf {
 			}else{
 				this.el.classList.add("hide");
 				this.tabIndex = -1;
+				this.highlight = false;
 			}
 		}
 
@@ -93,6 +143,10 @@ namespace cf {
 			this.el.addEventListener('focus', this.onFocusCallback, false);
 			this.onBlurCallback = this.onBlur.bind(this);
 			this.el.addEventListener('blur', this.onBlurCallback, false);
+
+			if(this.referenceTag.disabled){
+				this.el.setAttribute("disabled", "disabled");
+			}
 		}
 
 		private onBlur(event: Event){
@@ -102,9 +156,17 @@ namespace cf {
 		private onFocus(event: Event){
 			this._focus = true;
 			ConversationalForm.illustrateFlow(this, "dispatch", ControlElementEvents.ON_FOCUS, this.referenceTag);
-			document.dispatchEvent(new CustomEvent(ControlElementEvents.ON_FOCUS, {
+			this.eventTarget.dispatchEvent(new CustomEvent(ControlElementEvents.ON_FOCUS, {
 				detail: this.positionVector
 			}));
+		}
+
+		/**
+		* @name hasImage
+		* if control element contains an image element
+		*/
+		public hasImage(): boolean {
+			return false;
 		}
 
 		public calcPosition(){
@@ -115,6 +177,7 @@ namespace cf {
 				width: this.el.offsetWidth + mr,
 				x: this.el.offsetLeft,
 				y: this.el.offsetTop,
+				el: this,
 			};
 
 			this._positionVector.centerX = this._positionVector.x + (this._positionVector.width * 0.5);
@@ -128,12 +191,7 @@ namespace cf {
 
 		public animateIn(){
 			clearTimeout(this.animateInTimer);
-			if(this.el.classList.contains("animate-in")){
-				this.el.classList.remove("animate-in");
-				this.animateInTimer = setTimeout(() => this.el.classList.add("animate-in"), 0);
-			}else{
-				this.el.classList.add("animate-in");
-			}
+			this.el.classList.add("animate-in");
 		}
 
 		public animateOut(){
@@ -142,7 +200,7 @@ namespace cf {
 
 		public onChoose(){
 			ConversationalForm.illustrateFlow(this, "dispatch", ControlElementEvents.SUBMIT_VALUE, this.referenceTag);
-			document.dispatchEvent(new CustomEvent(ControlElementEvents.SUBMIT_VALUE, {
+			this.eventTarget.dispatchEvent(new CustomEvent(ControlElementEvents.SUBMIT_VALUE, {
 				detail: this
 			}));
 		}

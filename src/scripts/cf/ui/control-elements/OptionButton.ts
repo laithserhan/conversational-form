@@ -39,19 +39,23 @@ namespace cf {
 
 		protected onClick(event: MouseEvent){
 			ConversationalForm.illustrateFlow(this, "dispatch", OptionButtonEvents.CLICK, this);
-			document.dispatchEvent(new CustomEvent(OptionButtonEvents.CLICK, {
+			this.eventTarget.dispatchEvent(new CustomEvent(OptionButtonEvents.CLICK, {
 				detail: this
 			}));
 		}
 
 		// override
 		public getTemplate () : string {
+			// be aware that first option element on none multiple select tags will be selected by default
 			let tmpl: string = '<cf-button class="cf-button ' + (this.isMultiChoice ? "cf-checkbox-button" : "") + '" ' + ((<HTMLOptionElement> this.referenceTag.domElement).selected ? "selected='selected'" : "") + '>';
 
+			tmpl += "<div>";
 			if(this.isMultiChoice)
 				tmpl += "<cf-checkbox></cf-checkbox>";
 
 			tmpl += this.referenceTag.label;
+			tmpl += "</div>";
+
 			tmpl += "</cf-button>";
 
 			return tmpl;

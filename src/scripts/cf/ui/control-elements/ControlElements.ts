@@ -4,42 +4,55 @@
 /// <reference path="CheckboxButton.ts"/>
 /// <reference path="OptionsList.ts"/>
 /// <reference path="UploadFileUI.ts"/>
+/// <reference path="../../logic/EventDispatcher.ts"/>
 /// <reference path="../ScrollController.ts"/>
 /// <reference path="../chat/ChatResponse.ts"/>
 /// <reference path="../../../typings/globals/es6-promise/index.d.ts"/>
 
 // namespace
 namespace cf {
+	export const ControlElementsEvents = {
+		ON_RESIZE: "cf-on-control-elements-resize",
+		CHANGED: "cf-on-control-elements-changed"
+	}
 	export interface ControlElementsDTO{
 		height: number;
 	}
 
 	export interface IControlElementsOptions{
 		el: HTMLElement;
+		cfReference: ConversationalForm;
+		infoEl: HTMLElement;
+		eventTarget: EventDispatcher;
 	}
 
 	export class ControlElements {
+		private cfReference: ConversationalForm;
 		private elements: Array<IControlElement | OptionsList>;
+		private eventTarget: EventDispatcher;
 		private el: HTMLElement;
 		private list: HTMLElement;
 		private infoElement: HTMLElement;
+		private currentControlElement: IControlElement;
 
+		private animateInFromResponseTimer: any;
 		private ignoreKeyboardInput: boolean = false;
 		private rowIndex: number = -1;
 		private columnIndex: number = 0;
 		private tableableRows: Array<Array<IControlElement>>;
 
 		private userInputUpdateCallback: () => void;
-		private onChatAIReponseCallback: () => void;
+		private onChatReponsesUpdatedCallback: () => void;
 		private onUserInputKeyChangeCallback: () => void;
 		private onElementFocusCallback: () => void;
 		private onScrollCallback: () => void;
+		private onElementLoadedCallback: () => void;
+		private onResizeCallback: () => void;
 
 		private elementWidth: number = 0;
 		private filterListNumberOfVisible: number = 0;
 		private listScrollController: ScrollController;
 
-		private rAF: number;
 		private listWidth: number = 0;
 
 		public get active():boolean{
@@ -47,6 +60,9 @@ namespace cf {
 		}
 
 		public get focus():boolean{
+			if(!this.elements)
+				return false;
+
 			const elements: Array<IControlElement> = this.getElements();
 			for (var i = 0; i < elements.length; i++) {
 				let element: ControlElement = <ControlElement>elements[i];
@@ -58,6 +74,28 @@ namespace cf {
 			return false;
 		}
 
+		public get highlighted():boolean{
+			if(!this.elements)
+				return false;
+
+			const elements: Array<IControlElement> = this.getElements();
+			for (var i = 0; i < elements.length; i++) {
+				let element: ControlElement = <ControlElement>elements[i];
+				if(element.highlight){
+					return true;
+				}
+			}
+
+			return false;
+		}
+
+		public set disabled(value: boolean){
+			if(value)
+				this.list.classList.add("disabled");
+			else
+				this.list.classList.remove("disabled");
+		}
+
 		public get length(): number{
 			const elements: Array<IControlElement> = this.getElements();
 			return elements.length;
@@ -65,28 +103,38 @@ namespace cf {
 
 		constructor(options: IControlElementsOptions){
 			this.el = options.el;
+			this.eventTarget = options.eventTarget;
+			this.cfReference = options.cfReference;
+
 			this.list = <HTMLElement> this.el.getElementsByTagName("cf-list")[0];
-			this.infoElement = <HTMLElement> this.el.getElementsByTagName("cf-info")[0];
+			this.infoElement = options.infoEl;
 
 			this.onScrollCallback = this.onScroll.bind(this);
 			this.el.addEventListener('scroll', this.onScrollCallback, false);
 
-			this.onElementFocusCallback = this.onElementFocus.bind(this);
-			document.addEventListener(ControlElementEvents.ON_FOCUS, this.onElementFocusCallback, false);
+			this.onResizeCallback = this.onResize.bind(this);
+			window.addEventListener('resize', this.onResizeCallback, false);
 
-			this.onChatAIReponseCallback = this.onChatAIReponse.bind(this);
-			document.addEventListener(ChatResponseEvents.AI_QUESTION_ASKED, this.onChatAIReponseCallback, false);
+			this.onElementFocusCallback = this.onElementFocus.bind(this);
+			this.eventTarget.addEventListener(ControlElementEvents.ON_FOCUS, this.onElementFocusCallback, false);
+
+			this.onElementLoadedCallback = this.onElementLoaded.bind(this);
+			this.eventTarget.addEventListener(ControlElementEvents.ON_LOADED, this.onElementLoadedCallback, false);
+
+			this.onChatReponsesUpdatedCallback = this.onChatReponsesUpdated.bind(this);
+			this.eventTarget.addEventListener(ChatListEvents.CHATLIST_UPDATED, this.onChatReponsesUpdatedCallback, false);
 
 			this.onUserInputKeyChangeCallback = this.onUserInputKeyChange.bind(this);
-			document.addEventListener(UserInputEvents.KEY_CHANGE, this.onUserInputKeyChangeCallback, false);
+			this.eventTarget.addEventListener(UserInputEvents.KEY_CHANGE, this.onUserInputKeyChangeCallback, false);
 
 			// user input update
 			this.userInputUpdateCallback = this.onUserInputUpdate.bind(this);
-			document.addEventListener(FlowEvents.USER_INPUT_UPDATE, this.userInputUpdateCallback, false);
+			this.eventTarget.addEventListener(FlowEvents.USER_INPUT_UPDATE, this.userInputUpdateCallback, false);
 
 			this.listScrollController = new ScrollController({
 				interactionListener: this.el,
 				listToScroll: this.list,
+				eventTarget: this.eventTarget,
 				listNavButtons: this.el.getElementsByTagName("cf-list-button"),
 			});
 		}
@@ -96,17 +144,58 @@ namespace cf {
 			this.el.scrollLeft = 0;
 		}
 
+		/**
+		* @name onElementLoaded
+		* when element is loaded, usally image loaded.
+		*/
+		private onElementLoaded(event: CustomEvent){
+			this.onResize(null);
+		}
+
 		private onElementFocus(event: CustomEvent){
 			const vector: ControlElementVector = <ControlElementVector> event.detail;
 			let x: number = (vector.x + vector.width < this.elementWidth ? 0 : vector.x - vector.width);
 			x *= -1;
 
-			// TODO: update rowIndex and columnIndex
+			this.updateRowColIndexFromVector(vector);
+
 			this.listScrollController.setScroll(x, 0);
 		}
 
-		private onChatAIReponse(event:CustomEvent){
-			this.animateElementsIn();
+		private updateRowColIndexFromVector(vector: ControlElementVector){
+			for (let i = 0; i < this.tableableRows.length; i++) {
+				let items: Array <IControlElement> = this.tableableRows[i];
+			
+				for (let j = 0; j < items.length; j++) {
+					let item: IControlElement = items[j];
+					if(item == vector.el){
+						this.rowIndex = i;
+						this.columnIndex = j;
+						break;
+					}
+				}
+			}
+		}
+
+		private onChatReponsesUpdated(event:CustomEvent){
+			clearTimeout(this.animateInFromResponseTimer);
+
+			// only show when user response
+			if(!(<any> event.detail).currentResponse.isRobotResponse){
+				this.animateInFromResponseTimer = setTimeout(() => {
+					this.animateElementsIn();
+				}, this.cfReference.uiOptions.controlElementsInAnimationDelay);
+			}
+		}
+
+		private onListChanged(){
+			// reflow
+			this.list.offsetHeight;
+
+			requestAnimationFrame(() => {
+				ConversationalForm.illustrateFlow(this, "dispatch", ControlElementsEvents.CHANGED);
+				this.eventTarget.dispatchEvent(new CustomEvent(ControlElementsEvents.CHANGED));
+			})
 		}
 
 		private onUserInputKeyChange(event: CustomEvent){
@@ -114,16 +203,18 @@ namespace cf {
 				this.ignoreKeyboardInput = false;
 				return;
 			}
-
+			
 			const dto: InputKeyChangeDTO = event.detail;
-			const userInput: UserInput = dto.dto.input;
+			const userInput: UserTextInput = <UserTextInput> dto.dto.input;
 
 			if(this.active){
-				let shouldFilter: boolean = dto.inputFieldActive;
+				const isNavKey: boolean = [Dictionary.keyCodes["left"], Dictionary.keyCodes["right"], Dictionary.keyCodes["down"], Dictionary.keyCodes["up"]].indexOf(dto.keyCode) != -1;
+				const shouldFilter: boolean = dto.inputFieldActive && !isNavKey;
+
 				if(shouldFilter){
 					// input field is active, so we should filter..
 					const dto: FlowDTO = (<InputKeyChangeDTO> event.detail).dto;
-					const inputValue: string = dto.input.getInputValue();
+					const inputValue: string = (<UserTextInput> dto.input).getInputValue();
 					this.filterElementsFrom(inputValue);
 				}else{
 					if(dto.keyCode == Dictionary.keyCodes["left"]){
@@ -135,11 +226,12 @@ namespace cf {
 					}else if(dto.keyCode == Dictionary.keyCodes["up"]){
 						this.updateRowIndex(-1);
 					}else if(dto.keyCode == Dictionary.keyCodes["enter"] || dto.keyCode == Dictionary.keyCodes["space"]){
-						if(this.tableableRows[this.rowIndex] && this.tableableRows[this.rowIndex][this.columnIndex])
+						if(this.tableableRows[this.rowIndex] && this.tableableRows[this.rowIndex][this.columnIndex]){
 							this.tableableRows[this.rowIndex][this.columnIndex].el.click();
-						else if(this.tableableRows[0] && this.tableableRows[0].length == 1)
+						}else if(this.tableableRows[0] && this.tableableRows[0].length == 1){
 							// this is when only one element in a filter, then we click it!
 							this.tableableRows[0][0].el.click();
+						}
 					}
 
 					if(!this.validateRowColIndexes()){
@@ -148,14 +240,16 @@ namespace cf {
 				}
 			}
 
-			if(!userInput.active && this.tableableRows && (this.rowIndex == 0 || this.rowIndex == 1)){
-				this.tableableRows[this.rowIndex][this.columnIndex].el.focus();
+			if(!userInput.active && this.validateRowColIndexes() && this.tableableRows && (this.rowIndex == 0 || this.rowIndex == 1)){
+				this.tableableRows[this.rowIndex][this.columnIndex].focus = true;
+			}else if(!userInput.active){
+				userInput.setFocusOnInput();
 			}
 		}
 
 		private validateRowColIndexes():boolean{
 			const maxRowIndex: number = (this.el.classList.contains("two-row") ? 1 : 0)
-			if(this.tableableRows[this.rowIndex]){
+			if(this.rowIndex != -1 && this.tableableRows[this.rowIndex]){
 				// columnIndex is only valid if rowIndex is valid
 				if(this.columnIndex < 0){
 					this.columnIndex = this.tableableRows[this.rowIndex].length - 1;
@@ -176,17 +270,15 @@ namespace cf {
 			const oldRowIndex: number = this.rowIndex;
 			this.rowIndex += direction;
 
-			// console.log("updateRowIndex:", this.tableableRows);
-
 			if(this.tableableRows[this.rowIndex]){
 				// when row index is changed we need to find the closest column element, we cannot expect them to be indexly aligned
-				const oldVector: ControlElementVector = this.tableableRows[oldRowIndex][this.columnIndex].positionVector;
+				const centerX: number = this.tableableRows[oldRowIndex] ? this.tableableRows[oldRowIndex][this.columnIndex].positionVector.centerX : 0
 				const items: Array <IControlElement> = this.tableableRows[this.rowIndex];
 				let currentDistance: number = 10000000000000;
 				for (let i = 0; i < items.length; i++) {
 					let element: IControlElement = <IControlElement>items[i];
-					if(currentDistance > Math.abs(oldVector.centerX - element.positionVector.centerX)){
-						currentDistance = Math.abs(oldVector.centerX - element.positionVector.centerX);
+					if(currentDistance > Math.abs(centerX - element.positionVector.centerX)){
+						currentDistance = Math.abs(centerX - element.positionVector.centerX);
 						this.columnIndex = i;
 					}
 				}
@@ -222,6 +314,7 @@ namespace cf {
 				let itemsVisible: Array<ControlElement> = [];
 				for (let i = 0; i < elements.length; i++) {
 					let element: ControlElement = <ControlElement>elements[i];
+					element.highlight = false;
 					let elementVisibility: boolean = true;
 					
 					// check for all words of input
@@ -249,29 +342,64 @@ namespace cf {
 				// crude way of checking if list has changed...
 				const hasListChanged: boolean = this.filterListNumberOfVisible != itemsVisible.length;
 				if(hasListChanged){
-					this.resize();
 					this.animateElementsIn();
 				}
 				
 				this.filterListNumberOfVisible = itemsVisible.length;
+
+				// highlight first item
+				if(value != "" && this.filterListNumberOfVisible > 0)
+					itemsVisible[0].highlight = true;
 			}
 		}
 
-		private animateElementsIn(){
+		public clickOnHighlighted(){
 			const elements: Array<IControlElement> = this.getElements();
-			if(elements.length > 0){
-				if(!this.el.classList.contains("animate-in"))
-					this.el.classList.add("animate-in");
-				
-				for (let i = 0; i < elements.length; i++) {
-					let element: ControlElement = <ControlElement>elements[i];
-					element.animateIn();
+			for (let i = 0; i < elements.length; i++) {
+				let element: ControlElement = <ControlElement>elements[i];
+				if(element.highlight){
+					element.el.click();
+					break;
 				}
 			}
 		}
 
+		public animateElementsIn(){
+		
+			if(this.elements.length > 0){
+				this.resize();		
+				// this.el.style.transition = 'height 0.35s ease-out 0.2s';
+				this.list.style.height = '0px';
+				setTimeout(() => {
+					this.list.style.height = this.list.scrollHeight + 'px';
+					const elements: Array<IControlElement> = this.getElements();
+
+					setTimeout(() => {
+						if(elements.length > 0){
+							if(!this.el.classList.contains("animate-in"))
+								this.el.classList.add("animate-in");
+
+							for (let i = 0; i < elements.length; i++) {
+								let element: ControlElement = <ControlElement>elements[i];
+								element.animateIn();
+							}
+							
+						}
+
+						document.querySelector('.scrollableInner').classList.remove('scroll');
+
+						// Check if chatlist is scrolled to the bottom - if not we need to do it manually (pertains to Chrome)
+						const scrollContainer:HTMLElement = document.querySelector('scrollable');
+						if (scrollContainer.scrollTop < scrollContainer.scrollHeight) {
+							scrollContainer.scrollTop = scrollContainer.scrollHeight;
+						}
+					}, 300);
+				}, 200); 
+			}
+		}
+
 		private getElements(): Array <IControlElement> {
-			if(this.elements.length > 0 && this.elements[0].type == "OptionsList")
+			if(this.elements && this.elements.length > 0 && this.elements[0].type == "OptionsList")
 				return (<OptionsList> this.elements[0]).elements;
 			
 			return <Array<IControlElement>> this.elements;
@@ -312,8 +440,11 @@ namespace cf {
 						this.tableableRows[0].push(element);
 				}
 			}
+		}
 
-			// console.log("this.tableableRows created:", this.tableableRows)
+		public resetAfterErrorMessage(){
+			this.currentControlElement = null;
+			this.disabled = false;
 		}
 		
 		public focusFrom(angle: string){
@@ -329,39 +460,58 @@ namespace cf {
 
 			if(this.tableableRows[this.rowIndex] && this.tableableRows[this.rowIndex][this.columnIndex]){
 				this.ignoreKeyboardInput = true;
-				this.tableableRows[this.rowIndex][this.columnIndex].el.focus();
+				this.tableableRows[this.rowIndex][this.columnIndex].focus = true;
 			}else{
 				this.resetTabList();
 			}
-
-			// console.log("focusFrom", angle, "this.rowIndex:", this.rowIndex);
 		}
-		public setFocusOnElement(index: number){
-			const elements: Array<IControlElement> = this.getElements();
-			if(this.tableableRows && index != -1){
-				this.tableableRows[0][0].el.focus();
-			}else{
-				this.rowIndex = 0;
+
+		public updateStateOnElementsFromTag(tag: ITag){
+			for (var index = 0; index < this.elements.length; index++) {
+				var element: any = this.elements[index];
+
+				if(element.referenceTag == tag){
+					this.updateStateOnElements(element);
+					break;
+				}
 			}
 		}
 
 		public updateStateOnElements(controlElement: IControlElement){
-			this.list.classList.add("disabled");
-			if(controlElement.type == "RadioButton"){
+			this.currentControlElement = controlElement;
+
+			if(this.currentControlElement.type == "RadioButton"){
 				// uncheck other radio buttons...
 				const elements: Array<IControlElement> = this.getElements();
 				for (let i = 0; i < elements.length; i++) {
 					let element: RadioButton = <RadioButton>elements[i];
 					if(element != controlElement){
 						element.checked = false;
+					}else{
+						element.checked = true;
+					}
+				}
+			}else if(this.currentControlElement.type == "CheckboxButton"){
+				// change only the changed input
+				const elements: Array<IControlElement> = this.getElements();
+				for (let i = 0; i < elements.length; i++) {
+					let element: CheckboxButton = <CheckboxButton>elements[i];
+					if(element == controlElement){
+						const isChecked: boolean = (<HTMLInputElement> element.referenceTag.domElement).checked;
+						element.checked = isChecked;
 					}
 				}
 			}
 		}
 
 		public reset(){
+			this.infoElement.classList.remove("show");
+
 			this.el.classList.remove("one-row");
 			this.el.classList.remove("two-row");
+
+			// this.el.style.transition = 'height 0.35s ease-out 0.2s';
+			this.list.style.height = '0px';
 		}
 
 		public getElement(index: number):IControlElement | OptionsList{
@@ -375,19 +525,31 @@ namespace cf {
 			}
 
 			// generate text value for ChatReponse
-
 			if(this.elements && this.elements.length > 0){
 				switch(this.elements[0].type){
 					case "CheckboxButton" :
+						let numChecked: number = 0;// check if more than 1 is checked.
 						var values: Array<string> = [];
 						for (var i = 0; i < this.elements.length; i++) {
 							let element: CheckboxButton = <CheckboxButton> this.elements[i];
 							if(element.checked){
+								if(numChecked++ > 1)
+									break;
+							}
+						}
+
+						for (var i = 0; i < this.elements.length; i++) {
+							let element: CheckboxButton = <CheckboxButton> this.elements[i];
+							if(element.checked){
+								if(numChecked > 1)
+									element.partOfSeveralChoices = true;
+
 								values.push(element.value);
 							}
 
 							dto.controlElements.push(element);
 						}
+
 						
 						dto.text = Dictionary.parseAndGetMultiValueString(values);
 						
@@ -403,6 +565,8 @@ namespace cf {
 
 							dto.controlElements.push(element);
 						}
+
+
 						break;
 					case "OptionsList":
 						var element: OptionsList = <OptionsList> this.elements[0];
@@ -424,7 +588,7 @@ namespace cf {
 						break;
 					
 					case "UploadFileUI":
-						dto.text = (<UploadFileUI> this.elements[0]).value;//Dictionary.parseAndGetMultiValueString(values);
+						dto.text = (<UploadFileUI> this.elements[0]).getFilesAsString();//Dictionary.parseAndGetMultiValueString(values);
 						dto.controlElements.push(<UploadFileUI> this.elements[0]);
 						break;
 				}
@@ -433,33 +597,45 @@ namespace cf {
 			return dto;
 		}
 
-		public buildTags(tags: Array<ITag>){
-			this.list.classList.remove("disabled");
+		public clearTagsAndReset(){
+			this.reset();
 
-			const topList: HTMLUListElement = (<HTMLUListElement > this.el.parentNode).getElementsByTagName("ul")[0];
-			const bottomList: HTMLUListElement = (<HTMLUListElement> this.el.parentNode).getElementsByTagName("ul")[1];
-
-			// remove old elements
-			if(this.elements ){
+			if(this.elements){
 				while(this.elements.length > 0){
 					this.elements.pop().dealloc();
 				}
 			}
 
+			this.list.innerHTML = "";
+
+			this.onListChanged();
+		}
+
+		public buildTags(tags: Array<ITag>){
+			this.disabled = false;
+
+			const topList: HTMLUListElement = (<HTMLUListElement > this.el.parentNode).getElementsByTagName("ul")[0];
+			const bottomList: HTMLUListElement = (<HTMLUListElement> this.el.parentNode).getElementsByTagName("ul")[1];
+
+			// remove old elements
+			this.clearTagsAndReset();
+
 			this.elements = [];
 
 			for (var i = 0; i < tags.length; i++) {
 				var tag: ITag = tags[i];
-				
+
 				switch(tag.type){
 					case "radio" :
 						this.elements.push(new RadioButton({
-							referenceTag: tag
+							referenceTag: tag,
+							eventTarget: this.eventTarget
 						}));
 						break;
 					case "checkbox" :
 						this.elements.push(new CheckboxButton({
-							referenceTag: tag
+							referenceTag: tag,
+							eventTarget: this.eventTarget
 						}));
 					
 						break;
@@ -467,18 +643,18 @@ namespace cf {
 						this.elements.push(new OptionsList({
 							referenceTag: tag,
 							context: this.list,
+							eventTarget: this.eventTarget
 						}));
 						break;
-					
 					case "input" :
 					default :
 						if(tag.type == "file"){
 							this.elements.push(new UploadFileUI({
 								referenceTag: tag,
+								eventTarget: this.eventTarget
 							}));
 						}
 						// nothing to add.
-						// console.log("UserInput buildControlElements:", "none Control UI type, only input field is needed.");
 						break;
 				}
 
@@ -496,126 +672,143 @@ namespace cf {
 			}
 
 			new Promise((resolve: any, reject: any) => this.resize(resolve, reject)).then(() => {
-				const h: number = this.el.classList.contains("one-row") ? 52 : this.el.classList.contains("two-row") ? 102 : 0;
+				const h: number = this.list.offsetHeight;//this.el.classList.contains("one-row") ? 52 : this.el.classList.contains("two-row") ? 102 : 0;
 
 				const controlElementsAddedDTO: ControlElementsDTO = {
 					height: h,
 				};
 
+				this.onListChanged();
+
 				ConversationalForm.illustrateFlow(this, "dispatch", UserInputEvents.CONTROL_ELEMENTS_ADDED, controlElementsAddedDTO);
-				document.dispatchEvent(new CustomEvent(UserInputEvents.CONTROL_ELEMENTS_ADDED, {
+				this.eventTarget.dispatchEvent(new CustomEvent(UserInputEvents.CONTROL_ELEMENTS_ADDED, {
 					detail: controlElementsAddedDTO
 				}));
 			});
+		}
+
+		private onResize(event: Event){
+			this.resize();
 		}
 
 		public resize(resolve?: any, reject?: any){
 			// scrollbar things
 			// Element.offsetWidth - Element.clientWidth
 			this.list.style.width = "100%";
+			this.el.classList.remove("resized")
 			this.el.classList.remove("one-row");
 			this.el.classList.remove("two-row");
 			this.elementWidth = 0;
 
-			setTimeout(() => {
-				this.listWidth = 0;
-				const elements: Array <IControlElement> = this.getElements();
+			this.listWidth = 0;
+			const elements: Array <IControlElement> = this.getElements();
 
-				if(elements.length > 0){
-					const listWidthValues: Array<number> = [];
-					const listWidthValues2: Array<IControlElement> = [];
-					for (let i = 0; i < elements.length; i++) {
-						let element: IControlElement = <IControlElement>elements[i];
-						if(element.visible){
-							element.calcPosition();
-							this.listWidth += element.positionVector.width;
-							listWidthValues.push(element.positionVector.x + element.positionVector.width);
-							listWidthValues2.push(element);
-						}
+			if(elements && elements.length > 0){
+				const listWidthValues: Array<number> = [];
+				const listWidthValues2: Array<IControlElement> = [];
+				let containsElementWithImage: boolean = false;
+				for (let i = 0; i < elements.length; i++) {
+					let element: IControlElement = <IControlElement>elements[i];
+					if(element.visible){
+						element.calcPosition();
+						this.listWidth += element.positionVector.width;
+						listWidthValues.push(element.positionVector.x + element.positionVector.width);
+						listWidthValues2.push(element);
 					}
 
-					const elOffsetWidth: number = this.el.offsetWidth;
-					let isListWidthOverElementWidth: boolean = this.listWidth > elOffsetWidth;
-					if(isListWidthOverElementWidth){
-						this.el.classList.add("two-row");
-						this.listWidth = Math.max(elOffsetWidth, Math.round((listWidthValues[Math.floor(listWidthValues.length / 2)]) + 50));
-						this.list.style.width = this.listWidth + "px";
-					}else{
-						this.el.classList.add("one-row");
-					}
-
-					setTimeout(() => {
-						// recalc after LIST classes has been added
-						for (let i = 0; i < elements.length; i++) {
-							let element: IControlElement = <IControlElement>elements[i];
-							if(element.visible){
-								element.calcPosition();
-							}
-						}
-
-						// check again after classes are set.
-						isListWidthOverElementWidth = this.listWidth > elOffsetWidth;
-
-						// sort the list so we can set tabIndex properly
-						var elementsCopyForSorting: Array <IControlElement> = elements.slice();
-						const tabIndexFilteredElements: Array<IControlElement> = elementsCopyForSorting.sort((a: IControlElement, b: IControlElement) => {
-							return a.positionVector.x == b.positionVector.x ? 0 : a.positionVector.x < b.positionVector.x ? -1 : 1;
-						});
-
-						let tabIndex: number = 0;
-						for (let i = 0; i < tabIndexFilteredElements.length; i++) {
-							let element: IControlElement = <IControlElement>tabIndexFilteredElements[i];
-							if(element.visible){
-								//tabindex 1 are the UserInput element
-								element.tabIndex = 2 + (tabIndex++);
-							}else{
-								element.tabIndex = -1;
-							}
-						}
-						
-						// toggle nav button visiblity
-						cancelAnimationFrame(this.rAF);
-						if(isListWidthOverElementWidth){
-							this.el.classList.remove("hide-nav-buttons");
-						}else{
-							this.el.classList.add("hide-nav-buttons");
-						}
-
-						this.elementWidth = elOffsetWidth;
-
-						// resize scroll
-						this.listScrollController.resize(this.listWidth, this.elementWidth);
-
-						this.buildTabableRows();
-					}, 0);
+					if(element.hasImage())
+						containsElementWithImage = true;
 				}
 
+				let elOffsetWidth: number = this.el.offsetWidth;
+				let isListWidthOverElementWidth: boolean = this.listWidth > elOffsetWidth;
+				if(isListWidthOverElementWidth && !containsElementWithImage){
+					this.el.classList.add("two-row");
+					this.listWidth = Math.max(elOffsetWidth, Math.round((listWidthValues[Math.floor(listWidthValues.length / 2)]) + 50));
+					this.list.style.width = this.listWidth + "px";
+				}else{
+					this.el.classList.add("one-row");
+				}
 
-				if(resolve)
+				// recalc after LIST classes has been added
+				for (let i = 0; i < elements.length; i++) {
+					let element: IControlElement = <IControlElement>elements[i];
+					if(element.visible){
+						element.calcPosition();
+					}
+				}
+
+				// check again after classes are set.
+				elOffsetWidth = this.el.offsetWidth;
+				isListWidthOverElementWidth = this.listWidth > elOffsetWidth;
+
+				// sort the list so we can set tabIndex properly
+				var elementsCopyForSorting: Array <IControlElement> = elements.slice();
+				const tabIndexFilteredElements: Array<IControlElement> = elementsCopyForSorting.sort((a: IControlElement, b: IControlElement) => {
+					const aOverB: boolean = a.positionVector.y > b.positionVector.y;
+					return a.positionVector.x == b.positionVector.x ? (aOverB ? 1 : -1) : a.positionVector.x < b.positionVector.x ? -1 : 1;
+				});
+
+				let tabIndex: number = 0;
+				for (let i = 0; i < tabIndexFilteredElements.length; i++) {
+					let element: IControlElement = <IControlElement>tabIndexFilteredElements[i];
+					if(element.visible){
+						//tabindex 1 are the UserTextInput element
+						element.tabIndex = 2 + (tabIndex++);
+					}else{
+						element.tabIndex = -1;
+					}
+				}
+				
+				// toggle nav button visiblity
+				if(isListWidthOverElementWidth){
+					this.el.classList.remove("hide-nav-buttons");
+				}else{
+					this.el.classList.add("hide-nav-buttons");
+				}
+
+				this.elementWidth = elOffsetWidth;
+
+				// resize scroll
+				this.listScrollController.resize(this.listWidth, this.elementWidth);
+
+				
+				this.el.classList.add("resized");
+				
+				this.eventTarget.dispatchEvent(new CustomEvent(ControlElementsEvents.ON_RESIZE));
+				
+				if(resolve){
+					// only build when there is something to resolve
+					this.buildTabableRows();
 					resolve();
-			}, 0);
+				}
+			}
 		}
 
 		public dealloc(){
+			this.currentControlElement = null;
 			this.tableableRows = null;
 
-			cancelAnimationFrame(this.rAF);
-			this.rAF = null;
+			window.removeEventListener('resize', this.onResizeCallback, false);
+			this.onResizeCallback = null;
 
 			this.el.removeEventListener('scroll', this.onScrollCallback, false);
 			this.onScrollCallback = null;
 
-			document.removeEventListener(ControlElementEvents.ON_FOCUS, this.onElementFocusCallback, false);
+			this.eventTarget.removeEventListener(ControlElementEvents.ON_FOCUS, this.onElementFocusCallback, false);
 			this.onElementFocusCallback = null;
 
-			document.removeEventListener(ChatResponseEvents.AI_QUESTION_ASKED, this.onChatAIReponseCallback, false);
-			this.onChatAIReponseCallback = null;
+			this.eventTarget.removeEventListener(ChatListEvents.CHATLIST_UPDATED, this.onChatReponsesUpdatedCallback, false);
+			this.onChatReponsesUpdatedCallback = null;
 
-			document.removeEventListener(UserInputEvents.KEY_CHANGE, this.onUserInputKeyChangeCallback, false);
+			this.eventTarget.removeEventListener(UserInputEvents.KEY_CHANGE, this.onUserInputKeyChangeCallback, false);
 			this.onUserInputKeyChangeCallback = null;
 
-			document.removeEventListener(FlowEvents.USER_INPUT_UPDATE, this.userInputUpdateCallback, false);
+			this.eventTarget.removeEventListener(FlowEvents.USER_INPUT_UPDATE, this.userInputUpdateCallback, false);
 			this.userInputUpdateCallback = null;
+
+			this.eventTarget.removeEventListener(ControlElementEvents.ON_LOADED, this.onElementLoadedCallback, false);
+			this.onElementLoadedCallback = null;
 
 			this.listScrollController.dealloc();
 		}

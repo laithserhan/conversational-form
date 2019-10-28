@@ -33,18 +33,30 @@ namespace cf {
 		}
 
 		public static getInnerTextOfElement(element: Element): string {
-			var tmp = document.createElement("DIV");
+			const tmp = document.createElement("DIV");
 			tmp.innerHTML = element.innerHTML;
-			return tmp.textContent || tmp.innerText || "";
+			// return 
+			let text: string = tmp.textContent || tmp.innerText || "";
+			// text = String(text).replace('\t','');
+			text = String(text).replace(/^\s+|\s+$/g, '');
+			
+			return text;
 		}
 
 		public static getMouseEvent(eventString: string): string{
 			let mappings: any = [];
+			mappings["click"] = "ontouchstart" in window ? "touchstart" : "click";
 			mappings["mousedown"] = "ontouchstart" in window ? "touchstart" : "mousedown";
 			mappings["mouseup"] = "ontouchstart" in window ? "touchend" : "mouseup";
 			mappings["mousemove"] = "ontouchstart" in window ? "touchmove" : "mousemove";
 
 			return <string> mappings[eventString];
+		}
+
+		public static isInternetExlorer(){
+			var ua = window.navigator.userAgent;
+			var msie = ua.indexOf("MSIE ");
+			return msie > 0 || !!navigator.userAgent.match(/Trident.*rv\:11\./);
 		}
 
 		public static caniuse = {
@@ -56,31 +68,16 @@ namespace cf {
 			}
 		}
 
-		private static emojilib: any = null;
-		public static setEmojiLib(lib: string = "emojify", scriptSrc: string = "//cdnjs.cloudflare.com/ajax/libs/emojify.js/1.1.0/js/emojify.min.js"){
-			const head: HTMLHeadElement = document.head || document.getElementsByTagName("head")[0];
+		public static getValuesOfBars(str: string): Array<string>{
+
+			let strs: Array<string> = str.split("||");
 			
-			const script: HTMLScriptElement = document.createElement("script");
-			script.type = "text/javascript";
-			script.onload = function() {
-				// we use https://github.com/Ranks/emojify.js as a standard
-				Helpers.emojilib = (<any> window)[lib];
-				if(Helpers.emojilib){
-					Helpers.emojilib.setConfig({
-						img_dir: "https://cdnjs.cloudflare.com/ajax/libs/emojify.js/1.1.0/images/basic/",
-					});
-				}
-			}
-			script.setAttribute("src", scriptSrc);
-			head.appendChild(script);
-		}
-
-		public static emojify(str: string): string{
-			if(Helpers.emojilib){
-				str = Helpers.emojilib.replace(str);
-			}
-
-			return str;
+			// TODO: remove single |
+			// fallback to the standard
+			if(strs.length <= 1)
+				strs = str.split("|");
+			
+			return strs;
 		}
 
 		public static setTransform(el: any, transformString: string){
@@ -89,5 +86,19 @@ namespace cf {
 			el.style["-ms-transform"] = transformString;
 			el.style["transform"] = transformString;
 		}
+
+		// deep extends and object, from: https://andrewdupont.net/2009/08/28/deep-extending-objects-in-javascript/
+		public static extendObject (destination: any, source: any) : any{
+			for (var property in source) {
+				if (source[property] && source[property].constructor &&
+					source[property].constructor === Object) {
+						destination[property] = destination[property] || {};
+						arguments.callee(destination[property], source[property]);
+				} else {
+					destination[property] = source[property];
+				}
+			}
+			return destination;
+		};
 	}
 }

@@ -1,14 +1,19 @@
 /// <reference path="../logic/Helpers.ts"/>
+/// <reference path="../logic/EventDispatcher.ts"/>
 
 // namespace
 namespace cf {
 	export interface IScrollControllerOptions{
 		interactionListener: HTMLElement;
+		eventTarget: EventDispatcher;
 		listToScroll: HTMLElement;
 		listNavButtons: NodeListOf<Element>;
 
 	}
 	export class ScrollController{
+		public static acceleration: number = 0.1;
+
+		private eventTarget: EventDispatcher;
 		private interactionListener: HTMLElement;
 		private listToScroll: HTMLElement;
 		private listWidth: number = 0;
@@ -39,6 +44,7 @@ namespace cf {
 
 		constructor(options: IScrollControllerOptions){
 			this.interactionListener = options.interactionListener;
+			this.eventTarget = options.eventTarget;
 			this.listToScroll = options.listToScroll;
 			this.prevButton = options.listNavButtons[0];
 			this.nextButton = options.listNavButtons[1];
@@ -105,7 +111,7 @@ namespace cf {
 			this.startX += (this.startXTarget - this.startX) * 0.2;
 
 			// animate accerlaration
-			this.inputAccerlation += (this.inputAccerlationTarget - this.inputAccerlation) * (this.interacting ? 0.2 : 0.05);
+			this.inputAccerlation += (this.inputAccerlationTarget - this.inputAccerlation) * (this.interacting ? Math.min(ScrollController.acceleration + 0.1, 1) : ScrollController.acceleration);
 			const accDamping: number = 0.25;
 			this.inputAccerlationTarget *= accDamping;
 
@@ -121,10 +127,10 @@ namespace cf {
 
 			// bounce back when over
 			if(this.xTarget > 0)
-				this.xTarget += (0 - this.xTarget) * 0.3;
+				this.xTarget += (0 - this.xTarget) * Helpers.lerp(ScrollController.acceleration, 0.3, 0.8);
 
 			if(this.xTarget < this.max)
-				this.xTarget += (this.max - this.xTarget) * 0.3;
+				this.xTarget += (this.max - this.xTarget) * Helpers.lerp(ScrollController.acceleration, 0.3, 0.8);
 
 			this.x += (this.xTarget - this.x) * 0.4;
 
@@ -153,9 +159,9 @@ namespace cf {
 			}
 
 			if(xRounded <= this.max){
-				if(!this.nextButton.classList.contains("active"))
+				if(this.nextButton.classList.contains("active"))
 					this.nextButton.classList.remove("active");
-				if(!this.nextButton.classList.contains("cf-gradient"))
+				if(this.nextButton.classList.contains("cf-gradient"))
 					this.nextButton.classList.remove("cf-gradient");
 			}
 
@@ -186,6 +192,7 @@ namespace cf {
 			this.nextButton = null;
 
 			document.removeEventListener("mouseleave", this.documentLeaveCallback, false);
+			document.removeEventListener(Helpers.getMouseEvent("mouseup"), this.documentLeaveCallback, false);
 			this.interactionListener.removeEventListener(Helpers.getMouseEvent("mousedown"), this.onInteractStartCallback, false);
 			this.interactionListener.removeEventListener(Helpers.getMouseEvent("mouseup"), this.onInteractEndCallback, false);
 			this.interactionListener.removeEventListener(Helpers.getMouseEvent("mousemove"), this.onInteractMoveCallback, false);
@@ -203,6 +210,7 @@ namespace cf {
 			this.inputAccerlation = 0;
 			this.x = 0;
 			this.xTarget = 0;
+			Helpers.setTransform(this.listToScroll, "translateX(0px)");
 			this.render();
 			this.prevButton.classList.remove("active");
 			this.nextButton.classList.remove("active");
